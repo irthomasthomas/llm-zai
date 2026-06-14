@@ -1,0 +1,20 @@
+[project]
+name = "llm-zai-glm"
+version = "0.1"
+description = "LLM plugin for Z.AI / GLM models with Coding Plan support"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+dependencies = [
+    "llm",
+]
+
+[project.urls]
+Homepage = "https://github.com/irthomasthomas/llm-zai-glm"
+
+[project.entry-points."llm"]
+zai_glm = "llm_zai_glm"
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
