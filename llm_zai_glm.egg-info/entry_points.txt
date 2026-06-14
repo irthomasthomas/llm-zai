@@ -1,2 +1,0 @@
-[llm]
-zai_glm = llm_zai_glm
