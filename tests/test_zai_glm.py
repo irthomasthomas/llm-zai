@@ -8,7 +8,7 @@ unique features of the Z.AI GLM plugin:
 - Message key ordering (role -> content -> reasoning_content -> tool_calls)
 - clear_thinking defaults (coding=False, standard=True) and placement
   inside the thinking object in extra_body
-- thinking_type and effort options (effort only for glm-5.2)
+- thinking_type and effort options (effort only for EFFORT_MODELS)
 - Coding endpoint routing (api_base switching)
 - _combine_chunks_with_reasoning helper
 - Model registration and capabilities
@@ -53,7 +53,7 @@ ZAI_API_KEY = os.environ.get("PYTEST_ZAI_API_KEY", None) or "test-key-..."
 # Helpers
 # ---------------------------------------------------------------------------
 
-def make_model(model_id="glm-4.5", key="test-key"):
+def make_model(model_id="glm-5.1", key="test-key"):
     """Get a registered ZAI GLM model instance."""
     model = llm.get_model(model_id)
     model.key = key
@@ -66,11 +66,21 @@ def make_prompt(model, prompt_text="hi", **kwargs):
     return llm.Prompt(prompt_text, model=model, options=options, **kwargs)
 
 
-def build_messages_for(model_id, **prompt_kwargs):
-    """Invoke build_messages on a one-shot Prompt without hitting the API."""
+def build_messages_for(model_id, messages=None, **prompt_kwargs):
+    """Invoke build_messages on a one-shot Prompt without hitting the API.
+
+    llm >= 0.32 models translate prompt.messages, so the helper must pass an
+    explicit messages= chain (not just prompt= text) to Prompt.
+    """
     model = make_model(model_id)
     options = prompt_kwargs.pop("options", model.Options())
-    p = llm.Prompt(None, model=model, options=options, **prompt_kwargs)
+    p = llm.Prompt(
+        None,
+        model=model,
+        options=options,
+        messages=messages if messages is not None else [],
+        **prompt_kwargs,
+    )
     return model.build_messages(p, None)
 
 
@@ -117,7 +127,7 @@ class TestModelRegistration:
             assert model.api_base == CODING_API_BASE
 
     def test_effort_models_set(self):
-        assert EFFORT_MODELS == {"glm-5.2", "glm-coding-5.2"}
+        assert EFFORT_MODELS == {"glm-5.2", "glm-5.2-coding", "glm-5.1", "glm-5.1-coding"}
 
     def test_coding_aliases_set(self):
         assert CODING_ALIASES == {alias for alias, *_ in CODING_MODELS}
@@ -154,7 +164,7 @@ class TestModelCaps:
     """Test the _model_caps heuristic for auto-discovered models."""
 
     def test_vision_model(self):
-        assert _model_caps("glm-4.5v") == (True, False, False)
+        assert _model_caps("glm-5.1v") == (True, False, False)
 
     def test_vision_flash(self):
         assert _model_caps("glm-4.6v-flash") == (True, False, False)
@@ -163,7 +173,7 @@ class TestModelCaps:
         assert _model_caps("glm-ocr") == (True, False, False)
 
     def test_text_model(self):
-        assert _model_caps("glm-4.5") == (False, True, True)
+        assert _model_caps("glm-5.1") == (False, True, True)
 
     def test_128k_model_no_tools(self):
         assert _model_caps("glm-4-32b-0414-128k") == (False, True, False)
@@ -177,7 +187,7 @@ class TestBuildMessagesBasic:
     """Verify build_messages produces correct OpenAI-compatible message structure."""
 
     def test_simple_user_text(self):
-        msgs = build_messages_for("glm-4.5", messages=[user("hello")])
+        msgs = build_messages_for("glm-5.1", messages=[user("hello")])
         assert msgs == [{"role": "user", "content": "hello"}]
 
     def test_multi_turn(self):
@@ -319,7 +329,7 @@ class TestPreservedThinking:
 
     def test_reasoning_injected_from_conversation_response_json_streaming(self):
         """reasoning_content stored flat in response_json (streaming path)."""
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
 
         conversation = MagicMock()
         response_mock = MagicMock()
@@ -347,7 +357,7 @@ class TestPreservedThinking:
 
     def test_reasoning_injected_from_conversation_response_json_nonstreaming(self):
         """reasoning_content nested in choices[0].message (non-streaming path)."""
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
 
         conversation = MagicMock()
         response_mock = MagicMock()
@@ -379,7 +389,7 @@ class TestPreservedThinking:
 
     def test_reasoning_not_overwritten_if_reasoning_part_present(self):
         """If ReasoningPart already exists, it takes priority over response_json."""
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
 
         conversation = MagicMock()
         response_mock = MagicMock()
@@ -404,13 +414,13 @@ class TestPreservedThinking:
         assert msgs[0]["reasoning_content"] == "from_part"
 
     def test_no_crash_when_no_conversation(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         prompt = llm.Prompt("hi", model=model, options=model.Options())
         msgs = model.build_messages(prompt, None)
         assert msgs == [{"role": "user", "content": "hi"}]
 
     def test_no_crash_when_no_responses(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
 
         conversation = MagicMock()
         conversation.responses = []
@@ -428,9 +438,9 @@ class TestInterleavedThinking:
     """Verify reasoning_content appears alongside tool_calls in assistant messages."""
 
     def test_reasoning_before_tool_call(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         msgs = build_messages_for(
-            "glm-4.5",
+            "glm-5.1",
             messages=[
                 user("q"),
                 assistant(
@@ -445,9 +455,9 @@ class TestInterleavedThinking:
         assert "tool_calls" in assistant_msg
 
     def test_reasoning_with_text_and_tool_call(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         msgs = build_messages_for(
-            "glm-4.5",
+            "glm-5.1",
             messages=[
                 user("q"),
                 assistant(
@@ -463,9 +473,9 @@ class TestInterleavedThinking:
         assert len(assistant_msg["tool_calls"]) == 1
 
     def test_multiple_reasoning_parts_concatenated(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         msgs = build_messages_for(
-            "glm-4.5",
+            "glm-5.1",
             messages=[
                 user("q"),
                 assistant(
@@ -478,9 +488,9 @@ class TestInterleavedThinking:
         assert msgs[1]["reasoning_content"] == "Part 1. Part 2."
 
     def test_reasoning_only_on_assistant(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         msgs = build_messages_for(
-            "glm-4.5",
+            "glm-5.1",
             messages=[user("q")],
         )
         assert "reasoning_content" not in msgs[0]
@@ -495,9 +505,9 @@ class TestMessageKeyOrdering:
     role -> content -> reasoning_content -> tool_calls."""
 
     def test_key_order_with_reasoning_and_tool_calls(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         msgs = build_messages_for(
-            "glm-4.5",
+            "glm-5.1",
             messages=[
                 user("q"),
                 assistant(
@@ -513,9 +523,9 @@ class TestMessageKeyOrdering:
         assert keys.index("reasoning_content") < keys.index("tool_calls")
 
     def test_key_order_reasoning_no_tool_calls(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         msgs = build_messages_for(
-            "glm-4.5",
+            "glm-5.1",
             messages=[
                 user("q"),
                 assistant(
@@ -528,9 +538,9 @@ class TestMessageKeyOrdering:
         assert keys == ["role", "content", "reasoning_content"]
 
     def test_key_order_tool_calls_no_reasoning(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         msgs = build_messages_for(
-            "glm-4.5",
+            "glm-5.1",
             messages=[
                 user("q"),
                 assistant(
@@ -551,7 +561,7 @@ class TestBuildKwargs:
     """Verify build_kwargs configures thinking, clear_thinking, and effort correctly."""
 
     def test_default_thinking_enabled(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         prompt = make_prompt(model, "hi")
         kwargs = model.build_kwargs(prompt, stream=True)
         thinking = kwargs["extra_body"]["thinking"]
@@ -559,14 +569,14 @@ class TestBuildKwargs:
         assert thinking["clear_thinking"] is True
 
     def test_default_clear_thinking_false_on_coding(self):
-        model = make_model("glm-coding-5")
+        model = make_model("glm-5.1-coding")
         prompt = make_prompt(model, "hi")
         kwargs = model.build_kwargs(prompt, stream=True)
         thinking = kwargs["extra_body"]["thinking"]
         assert thinking["clear_thinking"] is False
 
     def test_clear_thinking_inside_thinking_object(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         prompt = make_prompt(model, "hi")
         kwargs = model.build_kwargs(prompt, stream=True)
         thinking = kwargs["extra_body"]["thinking"]
@@ -574,19 +584,19 @@ class TestBuildKwargs:
         assert "clear_thinking" not in kwargs["extra_body"]
 
     def test_explicit_clear_thinking_true(self):
-        model = make_model("glm-coding-5")
+        model = make_model("glm-5.1-coding")
         prompt = make_prompt(model, "hi", options=model.Options(clear_thinking=True))
         kwargs = model.build_kwargs(prompt, stream=True)
         assert kwargs["extra_body"]["thinking"]["clear_thinking"] is True
 
     def test_explicit_clear_thinking_false(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         prompt = make_prompt(model, "hi", options=model.Options(clear_thinking=False))
         kwargs = model.build_kwargs(prompt, stream=True)
         assert kwargs["extra_body"]["thinking"]["clear_thinking"] is False
 
     def test_thinking_type_disabled(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         prompt = make_prompt(
             model, "hi", options=model.Options(thinking_type="disabled")
         )
@@ -600,19 +610,20 @@ class TestBuildKwargs:
         assert kwargs["extra_body"]["thinking"]["effort"] == "max"
 
     def test_effort_omitted_for_unsupported_models(self):
-        model = make_model("glm-4.5")
+        # glm-5.1 is now in EFFORT_MODELS; glm-5 is not.
+        model = make_model("glm-5")
         prompt = make_prompt(model, "hi")
         kwargs = model.build_kwargs(prompt, stream=True)
         assert "effort" not in kwargs["extra_body"]["thinking"]
 
     def test_coding_model_effort_included(self):
-        model = make_model("glm-coding-5.2")
+        model = make_model("glm-5.2-coding")
         prompt = make_prompt(model, "hi")
         kwargs = model.build_kwargs(prompt, stream=True)
         assert kwargs["extra_body"]["thinking"]["effort"] == "max"
 
     def test_coding_option_removed_from_kwargs(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         prompt = make_prompt(model, "hi", options=model.Options(coding=True))
         kwargs = model.build_kwargs(prompt, stream=True)
         assert "coding" not in kwargs
@@ -644,12 +655,12 @@ class TestCodingEndpointRouting:
     """Verify coding option/alias switches api_base to CODING_API_BASE."""
 
     def test_coding_alias_uses_coding_api_base(self):
-        model = make_model("glm-coding-5")
+        model = make_model("glm-5.1-coding")
         assert model._is_coding() is True
         assert model.api_base == CODING_API_BASE
 
     def test_standard_model_default_api_base(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         assert model._is_coding() is False
         assert model.api_base == DEFAULT_API_BASE
 
@@ -713,23 +724,23 @@ class TestOptions:
     """Verify ZaiGlmOptionsMixin.Options exposes the right fields."""
 
     def test_options_has_coding_field(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         opts = model.Options()
         assert hasattr(opts, "coding")
         assert opts.coding is None
 
     def test_options_has_thinking_type_field(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         opts = model.Options()
         assert opts.thinking_type == "enabled"
 
     def test_options_has_effort_field(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         opts = model.Options()
         assert opts.effort == "max"
 
     def test_options_has_clear_thinking_field(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         opts = model.Options()
         assert opts.clear_thinking is None
 
@@ -755,7 +766,7 @@ class TestConversationRoundTrip:
     """Regression: reasoning_content survives a full DB round-trip."""
 
     def test_reasoning_preserved_after_db_load(self, tmp_path):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
 
         conversation = model.conversation()
         first = llm.Response(
@@ -801,7 +812,7 @@ class TestConversationRoundTrip:
         )
 
     def test_tool_chain_round_trip(self, tmp_path):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
 
         conversation = model.conversation()
         first = llm.Response(
@@ -899,7 +910,7 @@ class TestStreamEventEmission:
         return chunk
 
     def test_streaming_yields_reasoning_then_text(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         prompt = make_prompt(model, "q")
 
         mock_chunks = [
@@ -927,7 +938,7 @@ class TestStreamEventEmission:
 
     def test_streaming_yields_redacted_reasoning_when_no_content(self):
         """When reasoning_tokens > 0 but no reasoning_content, emit redacted."""
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         prompt = make_prompt(model, "q")
 
         mock_chunk = self._mock_chunk(
@@ -950,7 +961,7 @@ class TestStreamEventEmission:
         assert reasoning_events[0].chunk == ""
 
     def test_no_redacted_reasoning_when_content_emitted(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         prompt = make_prompt(model, "q")
 
         mock_chunk = self._mock_chunk(
@@ -981,7 +992,7 @@ class TestAsyncExecution:
 
     @pytest.mark.asyncio
     async def test_async_streaming_yields_reasoning_then_text(self):
-        model = llm.get_async_model("glm-4.5")
+        model = llm.get_async_model("glm-5.1")
         model.key = "test-key"
         prompt = make_prompt(model, "q")
 
@@ -1032,7 +1043,7 @@ class TestExecuteCodingEndpoint:
     """Verify execute() routes to coding API base when coding flag is set."""
 
     def test_coding_option_switches_api_base_in_execute(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         prompt = make_prompt(model, "q", options=model.Options(coding=True))
 
         mock_chunk = MagicMock()
@@ -1069,7 +1080,7 @@ class TestIntegrationFlow:
     """End-to-ish-end tests combining build_messages and build_kwargs."""
 
     def test_coding_model_preserved_thinking_round_trip(self):
-        model = make_model("glm-coding-5")
+        model = make_model("glm-5.1-coding")
 
         conversation = MagicMock()
         resp_mock = MagicMock()
@@ -1094,13 +1105,13 @@ class TestIntegrationFlow:
         assert kwargs["extra_body"]["thinking"]["clear_thinking"] is False
 
     def test_standard_model_clears_thinking_by_default(self):
-        model = make_model("glm-4.5")
+        model = make_model("glm-5.1")
         prompt = make_prompt(model, "q")
         kwargs = model.build_kwargs(prompt, stream=True)
         assert kwargs["extra_body"]["thinking"]["clear_thinking"] is True
 
     def test_effort_model_with_coding_and_preserved_thinking(self):
-        model = make_model("glm-coding-5.2")
+        model = make_model("glm-5.2-coding")
 
         conversation = MagicMock()
         resp_mock = MagicMock()

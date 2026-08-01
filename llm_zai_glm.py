@@ -47,6 +47,100 @@ for alias, real_name, _, _, _ in CODING_MODELS:
     API_BASE_FOR_MODEL[alias] = CODING_API_BASE
 
 
+def _reasoning_content_from_response_json(rj: Any, conversation=None) -> Optional[str]:
+    """Return a string reasoning_content, or None.
+
+    llm condenses logged response_json by replacing repeated substrings
+    (often the assistant response text) with objects like {"$": "r:<id>"}
+    or {"$r": [...]}. Z.AI rejects non-string reasoning_content in
+    assistant messages with HTTP 400 code 1210, so normalize/expand any
+    condensed form back to text before sending it.
+    """
+    if not isinstance(rj, dict):
+        return None
+
+    rc = rj.get("reasoning_content")
+    if rc is None and "choices" in rj:
+        for c in rj["choices"]:
+            msg = c.get("message", {}) if isinstance(c, dict) else {}
+            rc = msg.get("reasoning_content")
+            if rc:
+                break
+
+    if isinstance(rc, str):
+        return rc
+
+    # DB rows may contain condensed JSON. Try to expand it using the
+    # conversation's response texts (replacement ids "r:<response_id>").
+    if rc is not None and conversation is not None:
+        replacements = {}
+        for resp in getattr(conversation, "responses", []) or []:
+            rid = getattr(resp, "id", None)
+            if not rid:
+                continue
+            try:
+                text = resp.text_or_raise()
+            except Exception:
+                text = "".join(getattr(resp, "_chunks", []) or [])
+            if text:
+                replacements[f"r:{rid}"] = text
+        try:
+            from condense_json import uncondense_json
+
+            expanded = uncondense_json(rc, replacements)
+            if isinstance(expanded, str):
+                return expanded
+        except Exception:
+            pass
+
+    return None
+
+
+def _batch_get_reasoning(conversation):
+    """Get reasoning_content for all responses in a conversation.
+
+    Tries response_json first (fast path), then falls back to querying
+    the SQLite logs DB's reasoning column directly — the only reliable
+    source when ReasoningParts are lost during DB round-trip via from_row.
+
+    Returns a dict of {response_id: reasoning_text}.
+    """
+    if not conversation or not hasattr(conversation, "responses"):
+        return {}
+
+    reasoning_map = {}
+    missing_ids = []
+
+    for resp in conversation.responses:
+        rj = getattr(resp, "response_json", None) or {}
+        rc = _reasoning_content_from_response_json(rj, conversation)
+        if rc:
+            reasoning_map[resp.id] = rc
+        else:
+            missing_ids.append(resp.id)
+
+    # Batch query the DB's reasoning column for responses where
+    # response_json didn't have reasoning_content.
+    if missing_ids:
+        try:
+            import sqlite3
+            db_path = str(llm.user_dir() / "logs.db")
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            placeholders = ",".join("?" * len(missing_ids))
+            cur = conn.execute(
+                f"SELECT id, reasoning FROM responses WHERE id IN ({placeholders})",
+                missing_ids,
+            )
+            for row in cur:
+                if row[1]:
+                    reasoning_map[row[0]] = row[1]
+            conn.close()
+        except Exception:
+            pass
+
+    return reasoning_map
+
+
 def _combine_chunks_with_reasoning(chunks: List) -> dict:
     """Like combine_chunks but also captures reasoning_content from deltas.
 
@@ -103,7 +197,7 @@ class _ZaiGlmShared:
     def _is_coding(self) -> bool:
         return getattr(self, "_coding", False) or self.model_id in CODING_ALIASES
 
-    def _append_llm_message(self, out, message, current_system, image_detail=None):
+    def _append_zai_message(self, out, message, current_system, image_detail=None):
         """Translate one llm.Message into Z.AI-compatible OpenAI message dicts.
 
         Key ordering for preserved/interleaved thinking:
@@ -166,7 +260,7 @@ class _ZaiGlmShared:
             current_system = text
 
         # Build the message entry in the order Z.AI expects:
-        # role → content → reasoning_content → tool_calls
+        # role -> content -> reasoning_content -> tool_calls
         if attachment_items:
             content = []
             if text_bits:
@@ -179,9 +273,8 @@ class _ZaiGlmShared:
                 "content": "".join(text_bits) if text_bits else None,
             }
 
-        # Preserved thinking: include reasoning_content on assistant messages.
-        # The API requires the COMPLETE, unmodified reasoning_content in the
-        # original sequence. Consecutive reasoning parts are concatenated.
+        # Preserved / interleaved thinking: include reasoning_content on
+        # assistant messages. Consecutive reasoning parts are concatenated.
         if reasoning_bits and message.role == "assistant":
             entry["reasoning_content"] = "".join(reasoning_bits)
 
@@ -201,46 +294,43 @@ class _ZaiGlmShared:
         if image_detail is not None:
             image_detail = image_detail.value
 
-        # Build a map of assistant message index -> reasoning_content
-        # from conversation response_json, so we can inject it when
-        # ReasoningParts were lost during DB round-trip.
-        reasoning_map = {}
-        if conversation and hasattr(conversation, "responses"):
+        # Preserved thinking: collect reasoning_content from prior responses.
+        # prompt.messages is authoritative in llm >= 0.32; conversation is used
+        # only to recover reasoning lost during DB round-trips.
+        reasoning_map = _batch_get_reasoning(conversation)
+        reasoning_by_assistant_position = []
+        if conversation is not None and hasattr(conversation, "responses"):
             for resp in conversation.responses:
-                rj = getattr(resp, "response_json", None) or {}
-                rc = None
-                if isinstance(rj, dict):
-                    # Streaming format: flat reasoning_content
-                    rc = rj.get("reasoning_content")
-                    # Non-streaming format: nested in choices
-                    if not rc and "choices" in rj:
-                        for c in rj["choices"]:
-                            msg = c.get("message", {}) if isinstance(c, dict) else {}
-                            rc = msg.get("reasoning_content")
-                            if rc:
-                                break
-                if rc:
-                    reasoning_map[resp.id] = rc
+                reasoning_by_assistant_position.append(
+                    reasoning_map.get(getattr(resp, "id", None))
+                )
 
+        assistant_message_indexes = []
         for msg in prompt.messages:
-            current_system = self._append_llm_message(
+            current_system = self._append_zai_message(
                 messages, msg, current_system, image_detail=image_detail
             )
+            if msg.role == "assistant":
+                assistant_message_indexes.append(len(messages) - 1)
 
-        # Post-process: inject reasoning_content on assistant messages that
-        # lost their ReasoningParts during DB serialization. We match by
-        # scanning messages list for assistant entries without reasoning_content.
-        if reasoning_map:
-            reasoning_values = list(reasoning_map.values())
-            ri = 0
-            for entry in messages:
+        if reasoning_by_assistant_position:
+            for position, message_index in enumerate(assistant_message_indexes):
+                if position >= len(reasoning_by_assistant_position):
+                    break
+                reasoning = reasoning_by_assistant_position[position]
+                entry = messages[message_index]
                 if (
-                    entry.get("role") == "assistant"
+                    reasoning
+                    and entry.get("role") == "assistant"
                     and "reasoning_content" not in entry
-                    and ri < len(reasoning_values)
                 ):
-                    entry["reasoning_content"] = reasoning_values[ri]
-                    ri += 1
+                    # Preserve key order: reasoning_content before tool_calls.
+                    if "tool_calls" in entry:
+                        tool_calls = entry.pop("tool_calls")
+                        entry["reasoning_content"] = reasoning
+                        entry["tool_calls"] = tool_calls
+                    else:
+                        entry["reasoning_content"] = reasoning
 
         return messages
 
@@ -306,7 +396,7 @@ class ZaiGlmChat(_ZaiGlmShared, Chat):
                 if chunk.choices and chunk.choices[0].delta:
                     delta = chunk.choices[0].delta
 
-                    # Interleaved thinking: capture reasoning_content deltas
+                    # Interleaved thinking: emit reasoning_content deltas.
                     reasoning = getattr(delta, "reasoning_content", None)
                     if reasoning:
                         emitted_reasoning = True
@@ -385,6 +475,7 @@ class ZaiGlmChat(_ZaiGlmShared, Chat):
                     chunk=tool_call.function.arguments or "",
                     tool_call_id=tool_call.id,
                 )
+
             if message.content is not None:
                 yield StreamEvent(type="text", chunk=message.content)
 
@@ -511,6 +602,7 @@ class ZaiGlmAsyncChat(_ZaiGlmShared, AsyncChat):
                     chunk=tool_call.function.arguments or "",
                     tool_call_id=tool_call.id,
                 )
+
             if message.content is not None:
                 yield StreamEvent(type="text", chunk=message.content)
 
@@ -521,6 +613,7 @@ class ZaiGlmAsyncChat(_ZaiGlmShared, AsyncChat):
             and not emitted_reasoning
         ):
             yield StreamEvent(type="reasoning", chunk="", redacted=True)
+        response._prompt_json = {"messages": messages}
 
 
 def _model_caps(model_id):
@@ -546,6 +639,8 @@ def _fetch_models_from_api(api_base, key):
 
 
 def _refresh_models():
+    import click
+
     key = llm.get_key("zai")
     if not key:
         key = llm.get_key_from_env("GLM_API_KEY")
@@ -578,7 +673,10 @@ def _refresh_models():
 
 def _merged_models(default_models=None):
     if default_models is None:
-        default_models = MODELS
+        default_models = MODELS + [
+            (alias, vision, supports_schema, supports_tools)
+            for alias, real_name, vision, supports_schema, supports_tools in CODING_MODELS
+        ]
     models_path = llm.user_dir() / "zai_glm_models.json"
     merged = list(default_models)
     seen = {name for name, *_ in merged}
