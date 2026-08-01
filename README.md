@@ -1,11 +1,11 @@
-# llm-zai-glm
+# llm-zai
 
 LLM CLI plugin for [Z.AI](https://z.ai/) / GLM models, including the GLM Coding Plan endpoint.
 
 ## Installation
 
 ```bash
-llm install llm-zai-glm
+llm install llm-zai
 ```
 
 Set your API key:
@@ -75,7 +75,7 @@ The plugin registers the following GLM models on Z.AI's OpenAI-compatible endpoi
 ## Listing registered models
 
 ```bash
-llm zai-glm models
+llm zai models
 ```
 
 ## License

@@ -1,4 +1,4 @@
-"""Tests for llm-zai-glm plugin.
+"""Tests for llm-zai plugin.
 
 Inspired by simonw/llm-anthropic test structure, but focused on the
 unique features of the Z.AI GLM plugin:
@@ -21,11 +21,11 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 import llm
-import llm_zai_glm as zai
-from llm_zai_glm import (
-    ZaiGlmChat,
-    ZaiGlmAsyncChat,
-    ZaiGlmOptionsMixin,
+import llm_zai as zai
+from llm_zai import (
+    ZaiChat,
+    ZaiAsyncChat,
+    ZaiOptionsMixin,
     _combine_chunks_with_reasoning,
     _model_caps,
     MODELS,
@@ -111,7 +111,7 @@ class TestModelRegistration:
     def test_coding_models_registered(self, alias, real_name, vision, schema, tools):
         model = llm.get_model(alias)
         assert model is not None
-        assert isinstance(model, ZaiGlmChat)
+        assert isinstance(model, ZaiChat)
         assert model._coding is True
         assert model.model_name == real_name
         assert model.api_base == CODING_API_BASE
@@ -135,14 +135,14 @@ class TestModelRegistration:
     def test_sync_and_async_registered(self):
         model = llm.get_model("glm-5.2")
         async_model = llm.get_async_model("glm-5.2")
-        assert isinstance(model, ZaiGlmChat)
-        assert isinstance(async_model, ZaiGlmAsyncChat)
+        assert isinstance(model, ZaiChat)
+        assert isinstance(async_model, ZaiAsyncChat)
 
     def test_coding_sync_and_async_registered(self):
         model = llm.get_model("glm-5.2-coding")
         async_model = llm.get_async_model("glm-5.2-coding")
-        assert isinstance(model, ZaiGlmChat)
-        assert isinstance(async_model, ZaiGlmAsyncChat)
+        assert isinstance(model, ZaiChat)
+        assert isinstance(async_model, ZaiAsyncChat)
         assert model._coding is True
         assert async_model._coding is True
 
@@ -721,7 +721,7 @@ class TestCombineChunksWithReasoning:
 # ---------------------------------------------------------------------------
 
 class TestOptions:
-    """Verify ZaiGlmOptionsMixin.Options exposes the right fields."""
+    """Verify ZaiOptionsMixin.Options exposes the right fields."""
 
     def test_options_has_coding_field(self):
         model = make_model("glm-5.1")

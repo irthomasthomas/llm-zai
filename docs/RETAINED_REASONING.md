@@ -4,7 +4,7 @@
 
 This document summarizes the investigation, root-cause analysis, and
 verification of **retained reasoning** (also called *preserved thinking*)
-for the `llm-zai-glm` plugin. Retained reasoning means that when a GLM
+for the `llm-zai` plugin. Retained reasoning means that when a GLM
 model produces a `reasoning_content` field during inference, that content
 is stored, injected back into subsequent conversation turns, and
 accessible to the model.
@@ -47,7 +47,7 @@ the `response` DB column, not the condensed `response_json`).
 
 ## The Fix
 
-Two new functions were added to `llm_zai_glm.py` (+101/-21 lines vs
+Two new functions were added to `llm_zai.py` (+101/-21 lines vs
 commit `a7273ff`):
 
 ### 1. `_reasoning_content_from_response_json(rj, conversation=None)`
@@ -132,7 +132,7 @@ correct (`reasoning_content` was present in `prompt_json`).
 Turn 1:
   GLM API → streaming deltas with reasoning_content
     ↓
-  ZaiGlmChat.execute() captures reasoning via StreamEvent(type="reasoning")
+  ZaiChat.execute() captures reasoning via StreamEvent(type="reasoning")
     ↓
   llm stores reasoning in:
     - response.reasoning column (SQLite)  ← authoritative
@@ -160,7 +160,7 @@ Turn 2:
 
 | File | Change |
 |------|--------|
-| `llm_zai_glm.py` | +101/-21 lines (uncommitted) |
+| `llm_zai.py` | +101/-21 lines (uncommitted) |
 
 ### Key functions
 

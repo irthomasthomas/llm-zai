@@ -162,7 +162,7 @@ def _combine_chunks_with_reasoning(chunks: List) -> dict:
     return combined
 
 
-class ZaiGlmOptionsMixin:
+class ZaiOptionsMixin:
     class Options(Chat.Options):
         coding: Optional[bool] = Field(
             None,
@@ -185,7 +185,7 @@ class ZaiGlmOptionsMixin:
         )
 
 
-class _ZaiGlmShared:
+class _ZaiShared:
     """Shared logic for sync and async Z.AI GLM chat models."""
 
     needs_key = "zai"
@@ -360,11 +360,11 @@ class _ZaiGlmShared:
         return kwargs
 
 
-class ZaiGlmChat(_ZaiGlmShared, Chat):
+class ZaiChat(_ZaiShared, Chat):
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("reasoning", False)
         super().__init__(*args, **kwargs)
-        self.Options = ZaiGlmOptionsMixin.Options
+        self.Options = ZaiOptionsMixin.Options
 
     def execute(
         self, prompt, stream, response, conversation=None, key=None
@@ -489,11 +489,11 @@ class ZaiGlmChat(_ZaiGlmShared, Chat):
         response._prompt_json = {"messages": messages}
 
 
-class ZaiGlmAsyncChat(_ZaiGlmShared, AsyncChat):
+class ZaiAsyncChat(_ZaiShared, AsyncChat):
     def __init__(self, *args, **kwargs):
         kwargs.setdefault("reasoning", False)
         super().__init__(*args, **kwargs)
-        self.Options = ZaiGlmOptionsMixin.Options
+        self.Options = ZaiOptionsMixin.Options
 
     async def execute(
         self, prompt, stream, response, conversation=None, key=None
@@ -667,7 +667,7 @@ def _refresh_models():
         except Exception:
             pass
 
-    models_path = llm.user_dir() / "zai_glm_models.json"
+    models_path = llm.user_dir() / "zai_models.json"
     models_path.write_text(json.dumps(list(all_models.items()), indent=2))
 
 
@@ -677,7 +677,7 @@ def _merged_models(default_models=None):
             (alias, vision, supports_schema, supports_tools)
             for alias, real_name, vision, supports_schema, supports_tools in CODING_MODELS
         ]
-    models_path = llm.user_dir() / "zai_glm_models.json"
+    models_path = llm.user_dir() / "zai_models.json"
     merged = list(default_models)
     seen = {name for name, *_ in merged}
     if models_path.exists():
@@ -713,13 +713,13 @@ def register_models(register):
             headers={"Accept-Language": "en-US,en"},
         )
         if is_coding_alias:
-            sync_model = ZaiGlmChat(**kwargs)
-            async_model = ZaiGlmAsyncChat(**kwargs)
+            sync_model = ZaiChat(**kwargs)
+            async_model = ZaiAsyncChat(**kwargs)
             sync_model._coding = True
             async_model._coding = True
             register(sync_model, async_model)
         else:
-            register(ZaiGlmChat(**kwargs), ZaiGlmAsyncChat(**kwargs))
+            register(ZaiChat(**kwargs), ZaiAsyncChat(**kwargs))
 
 
 @llm.hookimpl
@@ -727,10 +727,10 @@ def register_commands(cli):
     import click
 
     @cli.group(name="zai")
-    def zai_glm():
-        "Commands for the llm-zai-glm plugin"
+    def zai():
+        "Commands for the llm-zai plugin"
 
-    @zai_glm.command(name="models")
+    @zai.command(name="models")
     def list_models():
         "List Z.AI GLM models registered by this plugin"
         for model_name, vision, schema, tools in _merged_models():
@@ -752,7 +752,7 @@ def register_commands(cli):
                 flags.append("tools")
             print(f"{alias:<35} {','.join(flags)}  -> {real_name}")
 
-    @zai_glm.command(name="refresh")
+    @zai.command(name="refresh")
     @click.option("--key", help="Z.AI API key")
     def refresh_models(key):
         "Refresh the list of models from the Z.AI API"
